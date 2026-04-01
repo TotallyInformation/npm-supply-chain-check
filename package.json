@@ -1,0 +1,33 @@
+{
+    "name": "npm-supply-chain-check",
+    "version": "1.0.0",
+    "description": "CLI tool to detect npm supply-chain risks by searching local projects for dependencies on a given package",
+    "type": "module",
+    "bin": {
+        "npm-supply-chain-check": "./index.mjs"
+    },
+    "files": [
+        "index.mjs"
+    ],
+    "engines": {
+        "node": ">=18"
+    },
+    "keywords": [
+        "npm",
+        "supply-chain",
+        "security",
+        "dependencies",
+        "audit"
+    ],
+    "license": "Apache-2.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/TotallyInformation/npm-supply-chain-check.git"
+    },
+    "homepage": "https://github.com/TotallyInformation/npm-supply-chain-check#readme",
+    "bugs": "https://github.com/TotallyInformation/npm-supply-chain-check/issues",
+    "author": {
+        "name": "Julian Knight (TotallyInformation)",
+        "url": "https://github.com/TotallyInformation"
+    }
+}
