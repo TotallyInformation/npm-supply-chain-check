@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-nocheck
 /** check-supply-chain.mjs - Supply-chain risk checker for npm package dependencies.
  *
  * Searches a directory tree for npm project roots and reports which packages
@@ -34,6 +35,23 @@ const execAsync = promisify(exec)
 
 const [,, targetPkg, startArg = '.'] = process.argv
 
+/**
+ * Read and print this CLI package version from package.json.
+ *
+ * @returns {Promise<void>}
+ */
+async function printCliVersion() {
+    try {
+        const pkgJsonUrl = new URL('./package.json', import.meta.url)
+        const pkg = JSON.parse(await readFile(pkgJsonUrl, 'utf8'))
+        console.log(pkg.version ?? 'unknown')
+        process.exit(0)
+    } catch {
+        console.error('\n  ERROR: Could not read package version from package.json.')
+        process.exit(1)
+    }
+}
+
 /** Validate the package name against npm's allowed character set.
  * Scoped: @scope/name — Unscoped: name
  * Only allows: lowercase letters, digits, hyphens, underscores, dots, @, /
@@ -42,11 +60,19 @@ const [,, targetPkg, startArg = '.'] = process.argv
  */
 const NPM_PKG_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i
 
+if (targetPkg === '--version' || targetPkg === '-v') {
+    await printCliVersion()
+}
+
 if (!targetPkg || targetPkg === '--help' || targetPkg === '-h') {
     console.log(`
 Supply-Chain Dependency Checker
 ================================
 Usage:  check-supply-chain <package-name> [start-folder|"global"]
+
+Options:
+    -h, --help      Show this help message
+    -v, --version   Print CLI version
 
 Arguments:
   package-name   The npm package name to search for (e.g. axios)
@@ -147,6 +173,55 @@ async function runNpmLs(cwd, global = false) {
 }
 
 /**
+ * Normalise a lock-file package path to POSIX separators so comparisons are
+ * consistent across platforms.
+ *
+ * @param {string} lockPath - Raw package path key from package-lock.json
+ * @returns {string} Normalised path using forward slashes
+ */
+function normalizeLockPath(lockPath) {
+    return String(lockPath).replace(/\\/g, '/')
+}
+
+/**
+ * Detect whether local/link/workspace dependencies are present.
+ *
+ * @param {object|null} lock - Parsed lock file object
+ * @param {object|null} rootPkgJson - Parsed root package.json
+ * @returns {boolean} True when npm ls fallback should be considered
+ */
+function mayNeedTreeFallback(lock, rootPkgJson) {
+    const pkgSections = [
+        rootPkgJson?.dependencies,
+        rootPkgJson?.devDependencies,
+        rootPkgJson?.optionalDependencies,
+        rootPkgJson?.peerDependencies,
+    ]
+
+    for (const section of pkgSections) {
+        if (!section || typeof section !== 'object') continue
+        for (const spec of Object.values(section)) {
+            if (typeof spec === 'string' && /^(file:|link:|workspace:)/.test(spec)) {
+                return true
+            }
+        }
+    }
+
+    const lockPkgs = lock?.packages
+    if (!lockPkgs || typeof lockPkgs !== 'object') return false
+
+    for (const data of Object.values(lockPkgs)) {
+        if (!data || typeof data !== 'object') continue
+        if (data.link === true) return true
+        if (typeof data.resolved === 'string' && /^(file:|link:|workspace:)/.test(data.resolved)) {
+            return true
+        }
+    }
+
+    return false
+}
+
+/**
  * @typedef {object} LockFinding
  * @property {string}   version    - Installed version of targetPkg
  * @property {string}   installedAt - node_modules path key from the lock file
@@ -181,7 +256,8 @@ function analyseLockFile(lock, rootPkgJson = null) {
     /** @type {Map<string, LockFinding>} keyed by the lock-file path */
     const instances = new Map()
 
-    for (const [path, data] of Object.entries(pkgs)) {
+    for (const [rawPath, data] of Object.entries(pkgs)) {
+        const path = normalizeLockPath(rawPath)
         if (path === suffix || path.endsWith(`/${suffix}`)) {
             instances.set(path, {
                 version: data.version ?? 'unknown',
@@ -195,7 +271,8 @@ function analyseLockFile(lock, rootPkgJson = null) {
     if (instances.size === 0) return []
 
     // Walk all packages to find which ones declare targetPkg in their deps
-    for (const [path, data] of Object.entries(pkgs)) {
+    for (const [rawPath, data] of Object.entries(pkgs)) {
+        const path = normalizeLockPath(rawPath)
         const allDeps = Object.assign(
             {},
             data.dependencies,
@@ -216,7 +293,9 @@ function analyseLockFile(lock, rootPkgJson = null) {
         let bestMatch = null
         let bestLen = -1
         for (const [instPath] of instances) {
-            const parentOfInst = instPath.slice(0, instPath.length - suffix.length - 1)
+            const parentOfInst = instPath === suffix
+                ? ''
+                : instPath.slice(0, instPath.length - suffix.length - 1)
             const matchBase = path === '' ? '' : path
             if (matchBase.startsWith(parentOfInst) && parentOfInst.length > bestLen) {
                 bestMatch = instPath
@@ -500,6 +579,19 @@ if (isGlobal) {
             // v2/v3 lock file — flat packages map (npm 7+)
             // Pass pkgJson so the hidden .package-lock.json case can detect direct deps
             findings = analyseLockFile(lock, pkgJson)
+
+            // Linked/local/workspace installs can hide transitive edges in lock metadata.
+            // Fall back to npm ls tree traversal to avoid false negatives.
+            if (findings.length === 0 && mayNeedTreeFallback(lock, pkgJson)) {
+                process.stdout.write('(linked/local deps detected, using npm ls) ')
+                const npmTree = await runNpmLs(root)
+                if (npmTree) findings = collectFindingsFromTree(npmTree).map(f => ({
+                    version: f.version,
+                    installedAt: `node_modules/${targetPkg}`,
+                    dependents: f.chain.length > 0 ? [f.chain.join(' → ')] : ['(project root)'],
+                    isDirect: f.chain.length === 0,
+                }))
+            }
         } else {
             // v1 lock file — fall back to npm ls subprocess
             process.stdout.write('(v1 lock, using npm ls) ')

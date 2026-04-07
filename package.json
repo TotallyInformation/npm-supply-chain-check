@@ -1,6 +1,6 @@
 {
     "name": "npm-supply-chain-check",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "CLI tool to detect npm supply-chain risks by searching local projects for dependencies on a given package",
     "type": "module",
     "bin": {

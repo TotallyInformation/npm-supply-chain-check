@@ -11,6 +11,12 @@ npx npm-supply-chain-check <package-name> [starting-folder]
 
 If you don't specify a starting folder, it will check the current working directory. You can also specify "global" to check globally installed packages.
 
+### Show the CLI version:
+
+```
+npx npm-supply-chain-check --version
+```
+
 ### Example
 
 ```
